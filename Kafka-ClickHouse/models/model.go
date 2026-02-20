@@ -6,6 +6,7 @@ type KafkaMsg struct {
 	MessageID     string          `json:"message_id"`
 	EventType     string          `json:"e"`
 	EventTime     int64           `json:"E"`
+	IngestTime    int64           `json:"ingest_time"`
 	RecvTime      int64           `json:"receive_time"`
 	Symbol        string          `json:"s"`
 	ClosePrice    decimal.Decimal `json:"c"`

@@ -12,6 +12,11 @@ import (
 	"github.com/shopspring/decimal"
 )
 
+type miniTickerEnvelope struct {
+	msg        models.MiniTicker
+	ingestTime int64
+}
+
 func ConvertRawToArrDS(
 	ctx context.Context,
 	wg *sync.WaitGroup,
@@ -22,7 +27,7 @@ func ConvertRawToArrDS(
 	defer close(outputChan)
 
 	numWorkers := 4
-	workerChan := make(chan models.MiniTicker, 100)
+	workerChan := make(chan miniTickerEnvelope, 100)
 	wgWorker := new(sync.WaitGroup)
 
 	defer close(workerChan)
@@ -55,6 +60,10 @@ func ConvertRawToArrDS(
 				slog.Info("Got Interruption signal, stopping to converting messages from stream")
 			default:
 				for _, msg := range arrMsgs {
+					envelope := miniTickerEnvelope{
+						msg:        msg,
+						ingestTime: time.Now().UnixMilli(),
+					}
 					select {
 					case <-ctx.Done():
 						wgWorker.Wait()
@@ -62,7 +71,7 @@ func ConvertRawToArrDS(
 							"Got Interruption signal, stopping to converting messages from stream",
 						)
 						return
-					case workerChan <- msg:
+					case workerChan <- envelope:
 					}
 				}
 			}
@@ -74,7 +83,7 @@ func ConvertRawToArrDS(
 func ReceiveDailyStat(
 	ctx context.Context,
 	wg *sync.WaitGroup,
-	inputChan chan models.MiniTicker,
+	inputChan chan miniTickerEnvelope,
 	outputChan chan models.DailyStat,
 ) {
 	defer wg.Done()
@@ -91,14 +100,15 @@ func ReceiveDailyStat(
 				return
 			}
 			dailyStat := models.DailyStat{
-				EventType:  msg.EventType,
-				EventTime:  msg.EventTime,
+				EventType:  msg.msg.EventType,
+				EventTime:  msg.msg.EventTime,
+				IngestTime: msg.ingestTime,
 				RecvTime:   time.Now().UnixMilli(),
-				Symbol:     msg.Symbol,
-				ClosePrice: msg.ClosePriceFloat(),
-				OpenPrice:  msg.OpenPriceFloat(),
-				HighPrice:  msg.HighPriceFloat(),
-				LowPrice:   msg.LowPriceFloat(),
+				Symbol:     msg.msg.Symbol,
+				ClosePrice: msg.msg.ClosePriceFloat(),
+				OpenPrice:  msg.msg.OpenPriceFloat(),
+				HighPrice:  msg.msg.HighPriceFloat(),
+				LowPrice:   msg.msg.LowPriceFloat(),
 			}
 			select {
 			case <-ctx.Done():
@@ -135,6 +145,7 @@ func ReceiveKafkaMsg(
 				MessageID:     uuid.New().String(),
 				EventType:     msg.EventType,
 				EventTime:     msg.EventTime,
+				IngestTime:    msg.IngestTime,
 				RecvTime:      msg.RecvTime,
 				Symbol:        msg.Symbol,
 				ClosePrice:    decimal.NewFromFloat(msg.ClosePrice),

@@ -7,14 +7,15 @@ import (
 )
 
 type SecondStat struct {
-	Symbol string  `json:"s"` 
-	Price  float64 `json:"p"` 
+	Symbol string  `json:"s"`
+	Price  float64 `json:"p"`
 }
 
 type DailyStat struct {
 	EventType  string  `json:"e"`
 	EventTime  int64   `json:"E"`
-	RecvTime   int64   `json:"receive_rime"`
+	IngestTime int64   `json:"ingest_time"`
+	RecvTime   int64   `json:"receive_time"`
 	Symbol     string  `json:"s"`
 	ClosePrice float64 `json:"c"`
 	OpenPrice  float64 `json:"o"`

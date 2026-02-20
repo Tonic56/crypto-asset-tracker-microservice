@@ -7,8 +7,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/Tonic56/crypto-asset-tracker-microservice/Kafka-ClickHouse/models"
 	"github.com/Tonic56/crypto-asset-tracker-microservice/Kafka-ClickHouse/adapters/clkhouse"
+	"github.com/Tonic56/crypto-asset-tracker-microservice/Kafka-ClickHouse/models"
 )
 
 type Repository struct {
@@ -40,28 +40,38 @@ func (r *Repository) CreateTable(ctx context.Context) error {
 	}
 
 	query := fmt.Sprintf(`
-		CREATE TABLE IF NOT EXISTS %s.%s (
-			message_id String,
-			event_type String,
-			event_time DateTime64(3),
-			receive_time DateTime64(3),
-			symbol String,
-			close_price Decimal64(8),
-			open_price Decimal64(8),
-			high_price Decimal64(8),
-			low_price Decimal64(8),
-			change_price Decimal64(8),
-			change_percent Decimal64(8)
-		) ENGINE = MergeTree()
-		ORDER BY (symbol, event_time)
-		PARTITION BY toYYYYMM(event_time)
-		SETTINGS index_granularity = 8192
-	`, r.cfg.Database, r.cfg.Table)
+			CREATE TABLE IF NOT EXISTS %s.%s (
+				message_id String,
+				event_type String,
+				event_time DateTime64(3),
+				ingest_time DateTime64(3),
+				receive_time DateTime64(3),
+				symbol String,
+				close_price Decimal64(8),
+				open_price Decimal64(8),
+				high_price Decimal64(8),
+				low_price Decimal64(8),
+				change_price Decimal64(8),
+				change_percent Decimal64(8)
+			) ENGINE = MergeTree()
+			ORDER BY (symbol, event_time)
+			PARTITION BY toYYYYMM(event_time)
+			SETTINGS index_granularity = 8192
+		`, r.cfg.Database, r.cfg.Table)
 
 	slog.Info("Creating table if not exists", "table", r.cfg.Table)
 
 	if err := r.client.Exec(ctx, query); err != nil {
 		return fmt.Errorf("failed to create table: %w", err)
+	}
+
+	alterQuery := fmt.Sprintf(
+		"ALTER TABLE %s.%s ADD COLUMN IF NOT EXISTS ingest_time DateTime64(3) AFTER event_time",
+		r.cfg.Database,
+		r.cfg.Table,
+	)
+	if err := r.client.Exec(ctx, alterQuery); err != nil {
+		return fmt.Errorf("failed to alter table with ingest_time: %w", err)
 	}
 
 	slog.Info("Table ready", "table", r.cfg.Table)
@@ -119,7 +129,7 @@ func (r *Repository) insert(ctx context.Context) error {
 	start := time.Now()
 	query := fmt.Sprintf(`
 		INSERT INTO %s.%s (
-		message_id, event_type, event_time, receive_time, symbol, close_price, open_price, high_price, low_price, change_price, change_percent)`, r.cfg.Database, r.cfg.Table)
+		message_id, event_type, event_time, ingest_time, receive_time, symbol, close_price, open_price, high_price, low_price, change_price, change_percent)`, r.cfg.Database, r.cfg.Table)
 
 	batch, err := r.client.PrepareBatch(ctx, query)
 	if err != nil {
@@ -131,6 +141,7 @@ func (r *Repository) insert(ctx context.Context) error {
 			msg.MessageID,
 			msg.EventType,
 			time.UnixMilli(msg.EventTime),
+			time.UnixMilli(msg.IngestTime),
 			time.UnixMilli(msg.RecvTime),
 			msg.Symbol,
 			msg.ClosePrice,
