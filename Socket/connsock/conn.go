@@ -2,9 +2,12 @@ package connsock
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"math"
 	"math/rand"
+	"net/http"
+	"strings"
 	"sync"
 	"time"
 
@@ -18,17 +21,14 @@ const (
 type socketProducer struct {
 	outputChan chan []byte
 
-	
 	urlConnection string
 	readMsgError  chan error
 	conn          *websocket.Conn
 	mu            sync.RWMutex
 
-	
 	readMsgCancel context.CancelFunc
 	readMsgWg     sync.WaitGroup
 
-	
 	reconnecting bool
 	reconnectMu  sync.Mutex
 }
@@ -47,17 +47,8 @@ func (sp *socketProducer) Start(ctx context.Context, wg *sync.WaitGroup) {
 	reconnectTicker := time.NewTicker(23 * time.Hour)
 	defer reconnectTicker.Stop()
 
-	conn, _, err := websocket.DefaultDialer.Dial(sp.urlConnection, nil)
+	conn, err := sp.connect()
 	if err != nil || conn == nil {
-		slog.Error(
-			"❌ Could not connect to binance",
-			"connectiin",
-			conn,
-			"error",
-			err,
-			"URL",
-			sp.urlConnection,
-		)
 		conn, err := sp.reconnect(ctx)
 		if err != nil || conn == nil {
 			return
@@ -69,7 +60,7 @@ func (sp *socketProducer) Start(ctx context.Context, wg *sync.WaitGroup) {
 	sp.mu.Unlock()
 
 	defer func() {
-		
+
 		if sp.readMsgCancel != nil {
 			sp.readMsgCancel()
 		}
@@ -228,7 +219,7 @@ func (sp *socketProducer) reconnect(ctx context.Context) (*websocket.Conn, error
 			maxDelay := 5 * time.Second
 			gen := rand.New(rand.NewSource(time.Now().UnixMicro()))
 
-			conn, _, err = websocket.DefaultDialer.Dial(sp.urlConnection, nil)
+			conn, err = sp.connect()
 
 			if err == nil && conn != nil {
 				return conn, nil
@@ -247,6 +238,88 @@ func (sp *socketProducer) reconnect(ctx context.Context) (*websocket.Conn, error
 	return nil, err
 }
 
+func (sp *socketProducer) connect() (*websocket.Conn, error) {
+	currentURL := sp.currentURL()
+	conn, resp, err := websocket.DefaultDialer.Dial(currentURL, nil)
+	if err == nil && conn != nil {
+		return conn, nil
+	}
+	sp.logHandshakeFailure(err, resp, currentURL)
+
+	fallbackURL, ok := fallbackFor451(currentURL, resp)
+	if !ok {
+		return nil, err
+	}
+
+	slog.Warn("Switching websocket endpoint after legal restriction response",
+		"from", currentURL,
+		"to", fallbackURL,
+	)
+	sp.setURL(fallbackURL)
+
+	conn, resp, err = websocket.DefaultDialer.Dial(fallbackURL, nil)
+	if err == nil && conn != nil {
+		return conn, nil
+	}
+	sp.logHandshakeFailure(err, resp, fallbackURL)
+	return nil, err
+}
+
+func (sp *socketProducer) currentURL() string {
+	sp.mu.RLock()
+	defer sp.mu.RUnlock()
+	return sp.urlConnection
+}
+
+func (sp *socketProducer) setURL(url string) {
+	sp.mu.Lock()
+	sp.urlConnection = url
+	sp.mu.Unlock()
+}
+
+func (sp *socketProducer) logHandshakeFailure(err error, resp *http.Response, url string) {
+	if resp == nil {
+		slog.Error("❌ Could not connect to binance",
+			"error", err,
+			"url", url,
+		)
+		return
+	}
+	bodyText := ""
+	if resp.Body != nil {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, 256))
+		resp.Body.Close()
+		if readErr == nil {
+			bodyText = strings.TrimSpace(string(body))
+		}
+	}
+
+	slog.Error("❌ WebSocket handshake failed",
+		"error", err,
+		"url", url,
+		"status", resp.Status,
+		"status_code", resp.StatusCode,
+		"body", bodyText,
+	)
+}
+
+func fallbackFor451(currentURL string, resp *http.Response) (string, bool) {
+	if resp == nil || resp.StatusCode != http.StatusUnavailableForLegalReasons {
+		return "", false
+	}
+
+	switch {
+	case strings.Contains(currentURL, "stream.binance.com:443"):
+		return strings.Replace(currentURL, "stream.binance.com:443", "stream.binance.us:9443", 1), true
+	case strings.Contains(currentURL, "stream.binance.com:9443"):
+		return strings.Replace(currentURL, "stream.binance.com:9443", "stream.binance.us:9443", 1), true
+	case strings.Contains(currentURL, "stream.binance.com"):
+		return strings.Replace(currentURL, "stream.binance.com", "stream.binance.us", 1), true
+	default:
+		return "", false
+	}
+}
+
 func (sp *socketProducer) sendPong(conn *websocket.Conn) {
 	slog.Info("🎾 Setting up Ping handler")
 
@@ -255,7 +328,6 @@ func (sp *socketProducer) sendPong(conn *websocket.Conn) {
 		return
 	}
 
-	
 	conn.SetPingHandler(func(appData string) error {
 		err := conn.WriteControl(
 			websocket.PongMessage,
